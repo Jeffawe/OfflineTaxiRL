@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+
+# IDEs
+.idea/
+.vscode/
+
+# Local data and artifacts
+data/
+*.pkl
+*.jsonl
+
+# OS files
+.DS_Store
