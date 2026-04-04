@@ -18,10 +18,12 @@ TRANSITIONS_FILE = Path("data/transitions_best_value.pkl")
 MODEL_FILE = Path("data/bc_model.pt")
 
 BATCH_SIZE = 64
-EPOCHS = 25
+EPOCHS = 40
 LEARNING_RATE = 1e-3
+WEIGHT_DECAY = 1e-4
 TRAIN_SPLIT = 0.8
 SEED = 42
+EARLY_STOPPING_PATIENCE = 5
 
 
 class BCDataset(Dataset):
@@ -133,7 +135,15 @@ def main() -> None:
 
     model = BehaviorCloningModel(input_dim=input_dim, num_actions=num_actions).to(device)
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    # Weight decay adds L2-style regularization through the optimizer.
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=LEARNING_RATE,
+        weight_decay=WEIGHT_DECAY,
+    )
+    best_val_loss = float("inf")
+    best_model_state = None
+    epochs_without_improvement = 0
 
     for epoch in range(EPOCHS):
         model.train()
@@ -169,6 +179,27 @@ def main() -> None:
             f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} | "
             f"val_loss={val_loss:.4f} val_acc={val_acc:.4f}"
         )
+
+        # Early stopping tracks the best validation loss and stops when it
+        # has not improved for several epochs in a row.
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_model_state = {
+                key: value.detach().cpu().clone()
+                for key, value in model.state_dict().items()
+            }
+            epochs_without_improvement = 0
+        else:
+            epochs_without_improvement += 1
+            if epochs_without_improvement >= EARLY_STOPPING_PATIENCE:
+                print(
+                    f"Early stopping at epoch {epoch + 1} "
+                    f"after {EARLY_STOPPING_PATIENCE} epochs without val_loss improvement."
+                )
+                break
+
+    if best_model_state is not None:
+        model.load_state_dict(best_model_state)
 
     MODEL_FILE.parent.mkdir(parents=True, exist_ok=True)
     torch.save(

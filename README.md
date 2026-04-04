@@ -1,5 +1,24 @@
 # OfflineTaxiRL
-TaxiRL implementation using Offline RL
+
+This project is an experiment that uses a taxi pickup-and-dropoff environment to explore offline reinforcement learning. The goal is to learn a policy from logged interaction data and compare offline RL against a behavior cloning baseline trained on the same state-action transitions.
+
+## Taxi Environment
+
+The environment is a grid world where a taxi moves one square at a time using four discrete actions: up, left, down, and right.
+
+Each episode includes passengers with:
+
+- a pickup location
+- a dropoff location
+- a payout for successful delivery
+
+The taxi must:
+
+- navigate to a passenger
+- pick them up
+- carry them to the correct dropoff point
+
+The environment is fully observable, deterministic, and sequential, which makes it a useful small-scale testbed for comparing imitation learning and offline RL methods.
 
 ## Heuristic Policy Scoring
 

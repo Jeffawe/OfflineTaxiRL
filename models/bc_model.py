@@ -10,6 +10,8 @@ class BehaviorCloningModel(nn.Module):
             nn.ReLU(),
             nn.Linear(128, 128),
             nn.ReLU(),
+            nn.Linear(128, 128),
+            nn.ReLU(),
             nn.Linear(128, num_actions),
         )
 
