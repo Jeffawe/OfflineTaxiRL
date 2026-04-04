@@ -13,6 +13,7 @@ venv/
 
 # Local data and artifacts
 data/
+d3rlpy_logs/
 *.pkl
 *.jsonl
 
