@@ -8,8 +8,8 @@ from environment.taxiManager import TaxiManager
 from scripts.generate_logs import choose_best_value_target, choose_step_toward
 
 
-WIDTH = 20
-HEIGHT = 20
+WIDTH = 10
+HEIGHT = 10
 NUM_PASSENGERS = 2
 NUM_EPISODES = 20
 MAX_STEPS = 100

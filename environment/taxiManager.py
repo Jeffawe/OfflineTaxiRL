@@ -33,7 +33,14 @@ class TaxiManager:
                 return random_x, random_y
 
     def pickup_passenger(self):
+        if self.taxi.current_passenger is not None:
+            return False
+
         for passenger in self.passengers:
+            if passenger.completed:
+                continue
+            if passenger.picked_up:
+                continue
             if passenger.pickup_position() == self.taxi.position():
                 self.taxi.pickup(passenger)
                 return True

@@ -80,17 +80,44 @@ def accuracy_from_logits(logits: torch.Tensor, targets: torch.Tensor) -> float:
     return correct / total
 
 
+def top_k_accuracy_from_logits(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    k: int = 2,
+) -> float:
+    k = min(k, logits.size(1))
+    topk_indices = torch.topk(logits, k=k, dim=1).indices
+    correct = (topk_indices == targets.unsqueeze(1)).any(dim=1).float().sum().item()
+    total = targets.size(0)
+    return correct / total
+
+
+def update_confusion_matrix(
+    confusion: torch.Tensor,
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+) -> None:
+    predictions = torch.argmax(logits, dim=1)
+
+    for true_label, predicted_label in zip(targets.view(-1), predictions.view(-1)):
+        confusion[true_label.long(), predicted_label.long()] += 1
+
+
 def evaluate(
     model: nn.Module,
     dataloader: DataLoader,
     criterion: nn.Module,
     device: torch.device,
-) -> tuple[float, float]:
+    num_actions: int,
+) -> tuple[float, float, float, torch.Tensor]:
     model.eval()
 
     total_loss = 0.0
     total_acc = 0.0
+    total_top2_acc = 0.0
     num_batches = 0
+
+    confusion = torch.zeros((num_actions, num_actions), dtype=torch.int64)
 
     with torch.no_grad():
         for states, actions in dataloader:
@@ -99,16 +126,38 @@ def evaluate(
 
             logits = model(states)
             loss = criterion(logits, actions)
+
             acc = accuracy_from_logits(logits, actions)
+            top2_acc = top_k_accuracy_from_logits(logits, actions, k=2)
 
             total_loss += loss.item()
             total_acc += acc
+            total_top2_acc += top2_acc
             num_batches += 1
 
-    if num_batches == 0:
-        return 0.0, 0.0
+            update_confusion_matrix(confusion, logits.cpu(), actions.cpu())
 
-    return total_loss / num_batches, total_acc / num_batches
+    if num_batches == 0:
+        return 0.0, 0.0, 0.0, confusion
+
+    return (
+        total_loss / num_batches,
+        total_acc / num_batches,
+        total_top2_acc / num_batches,
+        confusion,
+    )
+
+
+def print_confusion_matrix(confusion: torch.Tensor) -> None:
+    print("\nConfusion Matrix (rows=true action, cols=predicted action):")
+    print(confusion)
+
+    print("\nPer-class accuracy:")
+    for i in range(confusion.size(0)):
+        row_total = confusion[i].sum().item()
+        correct = confusion[i, i].item()
+        class_acc = (correct / row_total) if row_total > 0 else 0.0
+        print(f"Action {i}: {class_acc:.4f} ({correct}/{row_total})")
 
 
 def main() -> None:
@@ -135,12 +184,12 @@ def main() -> None:
 
     model = BehaviorCloningModel(input_dim=input_dim, num_actions=num_actions).to(device)
     criterion = nn.CrossEntropyLoss()
-    # Weight decay adds L2-style regularization through the optimizer.
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=LEARNING_RATE,
         weight_decay=WEIGHT_DECAY,
     )
+
     best_val_loss = float("inf")
     best_model_state = None
     epochs_without_improvement = 0
@@ -172,16 +221,20 @@ def main() -> None:
         train_loss = total_train_loss / num_train_batches
         train_acc = total_train_acc / num_train_batches
 
-        val_loss, val_acc = evaluate(model, val_loader, criterion, device)
+        val_loss, val_acc, val_top2_acc, _ = evaluate(
+            model=model,
+            dataloader=val_loader,
+            criterion=criterion,
+            device=device,
+            num_actions=num_actions,
+        )
 
         print(
             f"Epoch {epoch + 1}/{EPOCHS} | "
             f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} | "
-            f"val_loss={val_loss:.4f} val_acc={val_acc:.4f}"
+            f"val_loss={val_loss:.4f} val_acc={val_acc:.4f} val_top2_acc={val_top2_acc:.4f}"
         )
 
-        # Early stopping tracks the best validation loss and stops when it
-        # has not improved for several epochs in a row.
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             best_model_state = {
@@ -201,6 +254,21 @@ def main() -> None:
     if best_model_state is not None:
         model.load_state_dict(best_model_state)
 
+    final_val_loss, final_val_acc, final_val_top2_acc, final_confusion = evaluate(
+        model=model,
+        dataloader=val_loader,
+        criterion=criterion,
+        device=device,
+        num_actions=num_actions,
+    )
+
+    print("\nBest model validation metrics:")
+    print(f"val_loss={final_val_loss:.4f}")
+    print(f"val_acc={final_val_acc:.4f}")
+    print(f"val_top2_acc={final_val_top2_acc:.4f}")
+
+    print_confusion_matrix(final_confusion)
+
     MODEL_FILE.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
@@ -211,7 +279,7 @@ def main() -> None:
         MODEL_FILE,
     )
 
-    print(f"Saved BC model to {MODEL_FILE}")
+    print(f"\nSaved BC model to {MODEL_FILE}")
 
 
 if __name__ == "__main__":

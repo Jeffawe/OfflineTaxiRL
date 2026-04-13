@@ -16,10 +16,10 @@ from environment.taxiManager import TaxiManager
 # CONFIG
 # ============================================================
 
-WIDTH = 20
-HEIGHT = 20
+WIDTH = 10
+HEIGHT = 10
 NUM_PASSENGERS = 2
-NUM_EPISODES = 500
+NUM_EPISODES = 5000
 MAX_STEPS_PER_EPISODE = 100
 
 RAW_LOG_FILE = Path("data/raw_taxi_logs_best_value.jsonl")

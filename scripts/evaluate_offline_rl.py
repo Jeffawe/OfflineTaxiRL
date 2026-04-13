@@ -11,7 +11,21 @@ import d3rlpy
 from environment.taxiManager import TaxiManager
 
 
-MODEL_FILE = Path("data/offline_rl_cql.d3")
+WIDTH = 10
+HEIGHT = 10
+NUM_EPISODES = 20
+
+MODEL_FILES = {
+    "cql": Path("data/offline_rl_cql.d3"),
+    "bcq": Path("data/offline_rl_bcq.d3")
+}
+
+ID_TO_ACTION = {
+    0: (0, -1),   # up
+    1: (-1, 0),   # left
+    2: (0, 1),    # down
+    3: (1, 0),    # right
+}
 
 
 def build_state(manager: TaxiManager) -> list[float]:
@@ -37,37 +51,60 @@ def build_state(manager: TaxiManager) -> list[float]:
     return state
 
 
-def run_episode(algo) -> float:
-    manager = TaxiManager(width=20, height=20, num_passengers=2)
+def parse_algorithm_name() -> str:
+    if len(sys.argv) < 2:
+        return "cql"
+
+    algo_name = sys.argv[1].strip().lower()
+
+    if algo_name not in MODEL_FILES:
+        valid_names = ", ".join(MODEL_FILES.keys())
+        raise ValueError(
+            f"Unknown algorithm '{algo_name}'. "
+            f"Expected one of: {valid_names}"
+        )
+
+    return algo_name
+
+
+def run_episode(algo) -> dict[str, float | int | bool]:
+    manager = TaxiManager(width=WIDTH, height=HEIGHT, num_passengers=2)
     manager.create_passengers()
 
     total_reward = 0.0
     max_steps = 100
     step_count = 0
 
+    invalid_moves = 0
+    pickup_count = 0
+    dropoff_count = 0
+
     while not manager.is_done() and step_count < max_steps:
         state = np.asarray([build_state(manager)], dtype=np.float32)
         action_id = int(algo.predict(state)[0])
 
-        if action_id == 0:
-            dx, dy = (0, -1)
-        elif action_id == 1:
-            dx, dy = (-1, 0)
-        elif action_id == 2:
-            dx, dy = (0, 1)
-        else:
-            dx, dy = (1, 0)
+        dx, dy = ID_TO_ACTION[action_id]
 
         moved = manager.move_taxi(dx, dy)
+
+        picked_up = False
         dropped_off = False
         payout = 0.0
 
+        if not moved:
+            invalid_moves += 1
+
         if moved:
-            manager.pickup_passenger()
+            picked_up = manager.pickup_passenger()
+            if picked_up:
+                pickup_count += 1
+
             current_passenger_before_drop = manager.taxi.current_passenger
             dropped_off = manager.dropoff_passenger()
-            if dropped_off and current_passenger_before_drop is not None:
-                payout = float(current_passenger_before_drop.payout)
+            if dropped_off:
+                dropoff_count += 1
+                if current_passenger_before_drop is not None:
+                    payout = float(current_passenger_before_drop.payout)
 
         reward = -1.0 if not moved else -0.1
         if dropped_off:
@@ -76,16 +113,58 @@ def run_episode(algo) -> float:
         total_reward += reward
         step_count += 1
 
-    return total_reward
+    success = manager.is_done()
+
+    return {
+        "reward": total_reward,
+        "success": success,
+        "episode_length": step_count,
+        "pickup_count": pickup_count,
+        "dropoff_count": dropoff_count,
+        "invalid_moves": invalid_moves,
+        "invalid_move_rate": (invalid_moves / step_count) if step_count > 0 else 0.0,
+        "picked_up_any": pickup_count > 0,
+        "dropped_off_any": dropoff_count > 0,
+    }
 
 
 def main() -> None:
-    device = "cuda:0" if torch.cuda.is_available() else False
-    algo = d3rlpy.load_learnable(str(MODEL_FILE), device=device)
+    algo_name = parse_algorithm_name()
+    model_file = MODEL_FILES[algo_name]
 
-    rewards = [run_episode(algo) for _ in range(20)]
-    average_reward = sum(rewards) / len(rewards)
-    print(f"Offline RL average reward over 20 episodes: {average_reward:.2f}")
+    if not model_file.exists():
+        raise FileNotFoundError(
+            f"Model file for '{algo_name}' not found: {model_file}"
+        )
+
+    device = "cuda:0" if torch.cuda.is_available() else False
+    algo = d3rlpy.load_learnable(str(model_file), device=device)
+
+    results = [run_episode(algo) for _ in range(NUM_EPISODES)]
+
+    average_reward = sum(r["reward"] for r in results) / NUM_EPISODES
+    success_rate = sum(1 for r in results if r["success"]) / NUM_EPISODES
+    average_episode_length = sum(r["episode_length"] for r in results) / NUM_EPISODES
+    pickup_rate = sum(1 for r in results if r["picked_up_any"]) / NUM_EPISODES
+    dropoff_rate = sum(1 for r in results if r["dropped_off_any"]) / NUM_EPISODES
+    average_invalid_move_rate = sum(r["invalid_move_rate"] for r in results) / NUM_EPISODES
+
+    average_pickups_per_episode = sum(r["pickup_count"] for r in results) / NUM_EPISODES
+    average_dropoffs_per_episode = sum(r["dropoff_count"] for r in results) / NUM_EPISODES
+    average_invalid_moves_per_episode = sum(r["invalid_moves"] for r in results) / NUM_EPISODES
+
+    print(f"Algorithm: {algo_name.upper()}")
+    print(f"Model file: {model_file}")
+    print(f"Rollout evaluation over {NUM_EPISODES} episodes")
+    print(f"Average reward: {average_reward:.2f}")
+    print(f"Success rate: {success_rate:.2%}")
+    print(f"Average episode length: {average_episode_length:.2f}")
+    print(f"Pickup rate: {pickup_rate:.2%}")
+    print(f"Dropoff rate: {dropoff_rate:.2%}")
+    print(f"Average invalid move rate: {average_invalid_move_rate:.2%}")
+    print(f"Average pickups per episode: {average_pickups_per_episode:.2f}")
+    print(f"Average dropoffs per episode: {average_dropoffs_per_episode:.2f}")
+    print(f"Average invalid moves per episode: {average_invalid_moves_per_episode:.2f}")
 
 
 if __name__ == "__main__":

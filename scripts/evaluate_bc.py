@@ -12,6 +12,10 @@ from models.bc_model import BehaviorCloningModel
 
 MODEL_FILE = "data/bc_model.pt"
 
+WIDTH = 10
+HEIGHT = 10
+NUM_EPISODES = 20
+
 ID_TO_ACTION = {
     0: (0, -1),   # up
     1: (-1, 0),   # left
@@ -54,13 +58,17 @@ def load_model(device: torch.device) -> BehaviorCloningModel:
     return model
 
 
-def run_episode(model: BehaviorCloningModel, device: torch.device) -> float:
-    manager = TaxiManager(width=20, height=20, num_passengers=2)
+def run_episode(model: BehaviorCloningModel, device: torch.device) -> dict[str, float | int | bool]:
+    manager = TaxiManager(width=WIDTH, height=HEIGHT, num_passengers=2)
     manager.create_passengers()
 
     total_reward = 0.0
     max_steps = 100
     step_count = 0
+
+    invalid_moves = 0
+    pickup_count = 0
+    dropoff_count = 0
 
     while not manager.is_done() and step_count < max_steps:
         state = build_state(manager)
@@ -78,12 +86,20 @@ def run_episode(model: BehaviorCloningModel, device: torch.device) -> float:
         dropped_off = False
         payout = 0.0
 
+        if not moved:
+            invalid_moves += 1
+
         if moved:
             picked_up = manager.pickup_passenger()
+            if picked_up:
+                pickup_count += 1
+
             current_passenger_before_drop = manager.taxi.current_passenger
             dropped_off = manager.dropoff_passenger()
-            if dropped_off and current_passenger_before_drop is not None:
-                payout = float(current_passenger_before_drop.payout)
+            if dropped_off:
+                dropoff_count += 1
+                if current_passenger_before_drop is not None:
+                    payout = float(current_passenger_before_drop.payout)
 
         reward = -1.0 if not moved else -0.1
         if dropped_off:
@@ -92,21 +108,52 @@ def run_episode(model: BehaviorCloningModel, device: torch.device) -> float:
         total_reward += reward
         step_count += 1
 
-    return total_reward
+    success = manager.is_done()
+
+    return {
+        "reward": total_reward,
+        "success": success,
+        "episode_length": step_count,
+        "pickup_count": pickup_count,
+        "dropoff_count": dropoff_count,
+        "invalid_moves": invalid_moves,
+        "invalid_move_rate": (invalid_moves / step_count) if step_count > 0 else 0.0,
+        "picked_up_any": pickup_count > 0,
+        "dropped_off_any": dropoff_count > 0,
+    }
 
 
 def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = load_model(device)
 
-    rewards = []
-    num_episodes = 20
+    num_episodes = NUM_EPISODES
+    results = []
 
     for _ in range(num_episodes):
-        rewards.append(run_episode(model, device))
+        results.append(run_episode(model, device))
 
-    average_reward = sum(rewards) / len(rewards)
-    print(f"Average reward over {num_episodes} episodes: {average_reward:.2f}")
+    average_reward = sum(r["reward"] for r in results) / num_episodes
+    success_rate = sum(1 for r in results if r["success"]) / num_episodes
+    average_episode_length = sum(r["episode_length"] for r in results) / num_episodes
+    pickup_rate = sum(1 for r in results if r["picked_up_any"]) / num_episodes
+    dropoff_rate = sum(1 for r in results if r["dropped_off_any"]) / num_episodes
+    average_invalid_move_rate = sum(r["invalid_move_rate"] for r in results) / num_episodes
+
+    average_pickups_per_episode = sum(r["pickup_count"] for r in results) / num_episodes
+    average_dropoffs_per_episode = sum(r["dropoff_count"] for r in results) / num_episodes
+    average_invalid_moves_per_episode = sum(r["invalid_moves"] for r in results) / num_episodes
+
+    print(f"Rollout evaluation over {num_episodes} episodes")
+    print(f"Average reward: {average_reward:.2f}")
+    print(f"Success rate: {success_rate:.2%}")
+    print(f"Average episode length: {average_episode_length:.2f}")
+    print(f"Pickup rate: {pickup_rate:.2%}")
+    print(f"Dropoff rate: {dropoff_rate:.2%}")
+    print(f"Average invalid move rate: {average_invalid_move_rate:.2%}")
+    print(f"Average pickups per episode: {average_pickups_per_episode:.2f}")
+    print(f"Average dropoffs per episode: {average_dropoffs_per_episode:.2f}")
+    print(f"Average invalid moves per episode: {average_invalid_moves_per_episode:.2f}")
 
 
 if __name__ == "__main__":
