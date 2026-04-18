@@ -2,8 +2,9 @@ import sys
 from pathlib import Path
 
 if __package__ is None or __package__ == "":
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+import argparse
 import pickle
 import random
 
@@ -14,8 +15,19 @@ from torch.utils.data import Dataset, DataLoader
 from models.bc_model import BehaviorCloningModel
 
 
-TRANSITIONS_FILE = Path("data/transitions_best_value.pkl")
-MODEL_FILE = Path("data/bc_model.pt")
+QUALITY_TO_TRANSITIONS_FILE = {
+    "expert": Path("data/transitions_best_value.pkl"),
+    "mild": Path("data/transitions_mild_noisy.pkl"),
+    "mixed": Path("data/transitions_mixed_quality.pkl"),
+    "poor": Path("data/transitions_poor_noisy.pkl"),
+}
+
+QUALITY_TO_MODEL_FILE = {
+    "expert": Path("data/bc_model_expert.pt"),
+    "mild": Path("data/bc_model_mild.pt"),
+    "mixed": Path("data/bc_model_mixed.pt"),
+    "poor": Path("data/bc_model_poor.pt"),
+}
 
 BATCH_SIZE = 64
 EPOCHS = 40
@@ -24,6 +36,17 @@ WEIGHT_DECAY = 1e-4
 TRAIN_SPLIT = 0.8
 SEED = 42
 EARLY_STOPPING_PATIENCE = 5
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Train a behavior cloning model.")
+    parser.add_argument(
+        "--quality",
+        choices=sorted(QUALITY_TO_TRANSITIONS_FILE),
+        default="expert",
+        help="Logged data quality level to train on.",
+    )
+    return parser.parse_args()
 
 
 class BCDataset(Dataset):
@@ -161,10 +184,15 @@ def print_confusion_matrix(confusion: torch.Tensor) -> None:
 
 
 def main() -> None:
+    args = parse_args()
+    transitions_file = QUALITY_TO_TRANSITIONS_FILE[args.quality]
+    model_file = QUALITY_TO_MODEL_FILE[args.quality]
+
     random.seed(SEED)
     torch.manual_seed(SEED)
 
-    states, actions = load_bc_data(TRANSITIONS_FILE)
+    print(f"Training BC on quality='{args.quality}' using {transitions_file}")
+    states, actions = load_bc_data(transitions_file)
 
     if not states:
         raise ValueError("No states found in transition file.")
@@ -269,17 +297,19 @@ def main() -> None:
 
     print_confusion_matrix(final_confusion)
 
-    MODEL_FILE.parent.mkdir(parents=True, exist_ok=True)
+    model_file.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
             "model_state_dict": model.state_dict(),
             "input_dim": input_dim,
             "num_actions": num_actions,
+            "quality": args.quality,
+            "transitions_file": str(transitions_file),
         },
-        MODEL_FILE,
+        model_file,
     )
 
-    print(f"\nSaved BC model to {MODEL_FILE}")
+    print(f"\nSaved BC model to {model_file}")
 
 
 if __name__ == "__main__":

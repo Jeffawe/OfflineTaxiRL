@@ -16,10 +16,10 @@ from environment.taxiManager import TaxiManager
 # CONFIG
 # ============================================================
 
-WIDTH = 30
-HEIGHT = 30
+WIDTH = 15
+HEIGHT = 5
 NUM_PASSENGERS = 2
-NUM_EPISODES = 70000
+NUM_EPISODES = 50000
 MAX_STEPS_PER_EPISODE = 400
 
 PROGRESS_EVERY = 1000

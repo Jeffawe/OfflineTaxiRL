@@ -5,11 +5,11 @@ if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from environment.taxiManager import TaxiManager
-from scripts.generate_logs import choose_best_value_target, choose_step_toward
+from scripts.logs.generate_expert_logs import choose_best_value_target, choose_step_toward
 
 
-WIDTH = 10
-HEIGHT = 10
+WIDTH = 15
+HEIGHT = 15
 NUM_PASSENGERS = 2
 NUM_EPISODES = 20
 MAX_STEPS = 100

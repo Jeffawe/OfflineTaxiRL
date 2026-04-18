@@ -4,16 +4,24 @@ from pathlib import Path
 if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import argparse
 import torch
 
 from environment.taxiManager import TaxiManager
 from models.bc_model import BehaviorCloningModel
 
 
-MODEL_FILE = "data/bc_model.pt"
+DATA_DIR = Path("data")
+QUALITY_TO_MODEL_FILE = {
+    "expert": DATA_DIR / "bc_model_expert.pt",
+    "mild": DATA_DIR / "bc_model_mild.pt",
+    "mixed": DATA_DIR / "bc_model_mixed.pt",
+    "poor": DATA_DIR / "bc_model_poor.pt",
+}
+LEGACY_MODEL_FILE = DATA_DIR / "bc_model.pt"
 
-WIDTH = 10
-HEIGHT = 10
+WIDTH = 15
+HEIGHT = 15
 NUM_EPISODES = 20
 
 MOVE_PENALTY = -0.1
@@ -26,6 +34,45 @@ ID_TO_ACTION = {
     2: (0, 1),    # down
     3: (1, 0),    # right
 }
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Evaluate a behavior cloning model.")
+    parser.add_argument(
+        "--quality",
+        choices=sorted(QUALITY_TO_MODEL_FILE),
+        default=None,
+        help="Evaluate the BC model trained on this data quality. If omitted, use the first BC model found in data.",
+    )
+    return parser.parse_args()
+
+
+def find_first_bc_model() -> Path:
+    candidates = sorted(DATA_DIR.glob("bc_model_*.pt"))
+
+    if candidates:
+        return candidates[0]
+
+    if LEGACY_MODEL_FILE.exists():
+        return LEGACY_MODEL_FILE
+
+    raise FileNotFoundError(
+        "No BC model found. Expected one of data/bc_model_*.pt "
+        f"or legacy file {LEGACY_MODEL_FILE}."
+    )
+
+
+def resolve_model_file(quality: str | None) -> Path:
+    if quality is None:
+        return find_first_bc_model()
+
+    model_file = QUALITY_TO_MODEL_FILE[quality]
+    if not model_file.exists():
+        raise FileNotFoundError(
+            f"BC model for quality='{quality}' not found: {model_file}"
+        )
+
+    return model_file
 
 
 def build_state(manager: TaxiManager) -> list[float]:
@@ -51,8 +98,8 @@ def build_state(manager: TaxiManager) -> list[float]:
     return state
 
 
-def load_model(device: torch.device) -> BehaviorCloningModel:
-    checkpoint = torch.load(MODEL_FILE, map_location=device)
+def load_model(model_file: Path, device: torch.device) -> BehaviorCloningModel:
+    checkpoint = torch.load(model_file, map_location=device)
     model = BehaviorCloningModel(
         input_dim=checkpoint["input_dim"],
         num_actions=checkpoint["num_actions"],
@@ -149,8 +196,11 @@ def run_episode(model: BehaviorCloningModel, device: torch.device) -> dict[str, 
 
 
 def main() -> None:
+    args = parse_args()
+    model_file = resolve_model_file(args.quality)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = load_model(device)
+    model = load_model(model_file, device)
 
     num_episodes = NUM_EPISODES
     results = []
@@ -169,6 +219,7 @@ def main() -> None:
     average_dropoffs_per_episode = sum(r["dropoff_count"] for r in results) / num_episodes
     average_invalid_moves_per_episode = sum(r["invalid_moves"] for r in results) / num_episodes
 
+    print(f"Model file: {model_file}")
     print(f"Rollout evaluation over {num_episodes} episodes")
     print(f"Average reward: {average_reward:.2f}")
     print(f"Success rate: {success_rate:.2%}")
