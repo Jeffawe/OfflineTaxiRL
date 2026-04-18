@@ -16,6 +16,10 @@ WIDTH = 10
 HEIGHT = 10
 NUM_EPISODES = 20
 
+MOVE_PENALTY = -0.1
+INVALID_MOVE_PENALTY = -1.0
+PICKUP_BONUS = 0.0
+
 ID_TO_ACTION = {
     0: (0, -1),   # up
     1: (-1, 0),   # left
@@ -57,6 +61,24 @@ def load_model(device: torch.device) -> BehaviorCloningModel:
     model.eval()
     return model
 
+def compute_reward(
+    moved: bool,
+    picked_up: bool,
+    dropped_off: bool,
+    payout: float,
+) -> float:
+    if not moved:
+        return INVALID_MOVE_PENALTY
+
+    reward = MOVE_PENALTY
+
+    if picked_up:
+        reward += PICKUP_BONUS
+
+    if dropped_off:
+        reward += payout
+
+    return reward
 
 def run_episode(model: BehaviorCloningModel, device: torch.device) -> dict[str, float | int | bool]:
     manager = TaxiManager(width=WIDTH, height=HEIGHT, num_passengers=2)
@@ -101,9 +123,12 @@ def run_episode(model: BehaviorCloningModel, device: torch.device) -> dict[str, 
                 if current_passenger_before_drop is not None:
                     payout = float(current_passenger_before_drop.payout)
 
-        reward = -1.0 if not moved else -0.1
-        if dropped_off:
-            reward += payout
+        reward = compute_reward(
+            moved=moved,
+            picked_up=picked_up,
+            dropped_off=dropped_off,
+            payout=payout,
+        )
 
         total_reward += reward
         step_count += 1

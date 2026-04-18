@@ -11,9 +11,15 @@ import d3rlpy
 from environment.taxiManager import TaxiManager
 
 
-WIDTH = 10
-HEIGHT = 10
+WIDTH = 30
+HEIGHT = 30
 NUM_EPISODES = 20
+NUM_PASSENGERS = 2
+MAX_STEPS = 400
+
+MOVE_PENALTY = -0.1
+INVALID_MOVE_PENALTY = -1.0
+PICKUP_BONUS = 1.0
 
 MODEL_FILES = {
     "cql": Path("data/offline_rl_cql.d3"),
@@ -50,6 +56,24 @@ def build_state(manager: TaxiManager) -> list[float]:
 
     return state
 
+def compute_reward(
+    moved: bool,
+    picked_up: bool,
+    dropped_off: bool,
+    payout: float,
+) -> float:
+    if not moved:
+        return INVALID_MOVE_PENALTY
+
+    reward = MOVE_PENALTY
+
+    if picked_up:
+        reward += PICKUP_BONUS
+
+    if dropped_off:
+        reward += payout
+
+    return reward
 
 def parse_algorithm_name() -> str:
     if len(sys.argv) < 2:
@@ -66,13 +90,12 @@ def parse_algorithm_name() -> str:
 
     return algo_name
 
-
 def run_episode(algo) -> dict[str, float | int | bool]:
-    manager = TaxiManager(width=WIDTH, height=HEIGHT, num_passengers=2)
+    manager = TaxiManager(width=WIDTH, height=HEIGHT, num_passengers=NUM_PASSENGERS)
     manager.create_passengers()
 
     total_reward = 0.0
-    max_steps = 100
+    max_steps = MAX_STEPS
     step_count = 0
 
     invalid_moves = 0
@@ -106,9 +129,12 @@ def run_episode(algo) -> dict[str, float | int | bool]:
                 if current_passenger_before_drop is not None:
                     payout = float(current_passenger_before_drop.payout)
 
-        reward = -1.0 if not moved else -0.1
-        if dropped_off:
-            reward += payout
+        reward = compute_reward(
+            moved=moved,
+            picked_up=picked_up,
+            dropped_off=dropped_off,
+            payout=payout,
+        )
 
         total_reward += reward
         step_count += 1
