@@ -8,6 +8,7 @@ import argparse
 import pickle
 import random
 
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
@@ -28,14 +29,15 @@ QUALITY_TO_MODEL_FILE = {
     "mixed": Path("data/bc_model_mixed.pt"),
     "poor": Path("data/bc_model_poor.pt"),
 }
+BC_EPOCH_OPTIONS = [40, 60, 100]
 
 BATCH_SIZE = 64
-EPOCHS = 40
+EPOCHS = BC_EPOCH_OPTIONS[0]
 LEARNING_RATE = 1e-3
 WEIGHT_DECAY = 1e-4
 TRAIN_SPLIT = 0.8
 SEED = 42
-EARLY_STOPPING_PATIENCE = 5
+EARLY_STOPPING_PATIENCE = 10
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,13 +48,24 @@ def parse_args() -> argparse.Namespace:
         default="expert",
         help="Logged data quality level to train on.",
     )
+    parser.add_argument(
+        "--multiple",
+        action="store_true",
+        help="Train one BC model for each configured epoch budget.",
+    )
     return parser.parse_args()
 
 
+def model_file_for_epochs(base_model_file: Path, epochs: int, multiple: bool) -> Path:
+    if not multiple:
+        return base_model_file
+    return base_model_file.with_name(f"{base_model_file.stem}_e{epochs}{base_model_file.suffix}")
+
+
 class BCDataset(Dataset):
-    def __init__(self, states: list[list[float]], actions: list[int]) -> None:
-        self.states = torch.tensor(states, dtype=torch.float32)
-        self.actions = torch.tensor(actions, dtype=torch.long)
+    def __init__(self, states: np.ndarray, actions: np.ndarray) -> None:
+        self.states = torch.from_numpy(states.astype(np.float32, copy=False))
+        self.actions = torch.from_numpy(actions.astype(np.int64, copy=False))
 
     def __len__(self) -> int:
         return len(self.states)
@@ -61,37 +74,58 @@ class BCDataset(Dataset):
         return self.states[index], self.actions[index]
 
 
-def load_bc_data(path: Path) -> tuple[list[list[float]], list[int]]:
+def iter_transition_chunks(path: Path):
     with path.open("rb") as f:
-        transitions = pickle.load(f)
+        while True:
+            try:
+                yield pickle.load(f)
+            except EOFError:
+                break
 
-    states: list[list[float]] = []
-    actions: list[int] = []
 
-    for t in transitions:
-        states.append(t["state"])
-        actions.append(int(t["action"]))
+def load_bc_data(path: Path) -> tuple[np.ndarray, np.ndarray]:
+    total_transitions = 0
+    state_dim = None
+
+    for chunk in iter_transition_chunks(path):
+        if not chunk:
+            continue
+        total_transitions += len(chunk)
+        if state_dim is None:
+            state_dim = len(chunk[0]["state"])
+
+    if total_transitions == 0 or state_dim is None:
+        return np.empty((0, 0), dtype=np.float32), np.empty((0,), dtype=np.int64)
+
+    states = np.empty((total_transitions, state_dim), dtype=np.float32)
+    actions = np.empty((total_transitions,), dtype=np.int64)
+
+    offset = 0
+    for chunk in iter_transition_chunks(path):
+        for t in chunk:
+            states[offset] = t["state"]
+            actions[offset] = int(t["action"])
+            offset += 1
 
     return states, actions
 
 
 def split_data(
-    states: list[list[float]],
-    actions: list[int],
+    states: np.ndarray,
+    actions: np.ndarray,
     train_split: float = TRAIN_SPLIT,
-) -> tuple[list[list[float]], list[int], list[list[float]], list[int]]:
-    indices = list(range(len(states)))
-    random.shuffle(indices)
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    indices = np.random.permutation(len(states))
 
     split_index = int(len(indices) * train_split)
     train_indices = indices[:split_index]
     val_indices = indices[split_index:]
 
-    train_states = [states[i] for i in train_indices]
-    train_actions = [actions[i] for i in train_indices]
+    train_states = states[train_indices]
+    train_actions = actions[train_indices]
 
-    val_states = [states[i] for i in val_indices]
-    val_actions = [actions[i] for i in val_indices]
+    val_states = states[val_indices]
+    val_actions = actions[val_indices]
 
     return train_states, train_actions, val_states, val_actions
 
@@ -183,22 +217,21 @@ def print_confusion_matrix(confusion: torch.Tensor) -> None:
         print(f"Action {i}: {class_acc:.4f} ({correct}/{row_total})")
 
 
-def main() -> None:
-    args = parse_args()
-    transitions_file = QUALITY_TO_TRANSITIONS_FILE[args.quality]
-    model_file = QUALITY_TO_MODEL_FILE[args.quality]
-
+def train_single_model(
+    *,
+    quality: str,
+    transitions_file: Path,
+    model_file: Path,
+    states: np.ndarray,
+    actions: np.ndarray,
+    epochs: int,
+) -> None:
     random.seed(SEED)
+    np.random.seed(SEED)
     torch.manual_seed(SEED)
 
-    print(f"Training BC on quality='{args.quality}' using {transitions_file}")
-    states, actions = load_bc_data(transitions_file)
-
-    if not states:
-        raise ValueError("No states found in transition file.")
-
-    input_dim = len(states[0])
-    num_actions = len(set(actions))
+    input_dim = states.shape[1]
+    num_actions = int(actions.max()) + 1
 
     train_states, train_actions, val_states, val_actions = split_data(states, actions)
 
@@ -222,7 +255,10 @@ def main() -> None:
     best_model_state = None
     epochs_without_improvement = 0
 
-    for epoch in range(EPOCHS):
+    print(f"\nTraining BC on quality='{quality}' for up to {epochs} epochs")
+    print(f"Saving checkpoint to {model_file}")
+
+    for epoch in range(epochs):
         model.train()
 
         total_train_loss = 0.0
@@ -258,7 +294,7 @@ def main() -> None:
         )
 
         print(
-            f"Epoch {epoch + 1}/{EPOCHS} | "
+            f"Epoch {epoch + 1}/{epochs} | "
             f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} | "
             f"val_loss={val_loss:.4f} val_acc={val_acc:.4f} val_top2_acc={val_top2_acc:.4f}"
         )
@@ -303,13 +339,37 @@ def main() -> None:
             "model_state_dict": model.state_dict(),
             "input_dim": input_dim,
             "num_actions": num_actions,
-            "quality": args.quality,
+            "quality": quality,
             "transitions_file": str(transitions_file),
+            "epochs": epochs,
         },
         model_file,
     )
 
     print(f"\nSaved BC model to {model_file}")
+
+
+def main() -> None:
+    args = parse_args()
+    transitions_file = QUALITY_TO_TRANSITIONS_FILE[args.quality]
+    base_model_file = QUALITY_TO_MODEL_FILE[args.quality]
+
+    print(f"Training BC on quality='{args.quality}' using {transitions_file}")
+    states, actions = load_bc_data(transitions_file)
+
+    if len(states) == 0:
+        raise ValueError("No states found in transition file.")
+
+    epoch_options = BC_EPOCH_OPTIONS if args.multiple else [BC_EPOCH_OPTIONS[0]]
+    for epochs in epoch_options:
+        train_single_model(
+            quality=args.quality,
+            transitions_file=transitions_file,
+            model_file=model_file_for_epochs(base_model_file, epochs, args.multiple),
+            states=states,
+            actions=actions,
+            epochs=epochs,
+        )
 
 
 if __name__ == "__main__":

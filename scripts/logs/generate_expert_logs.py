@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 if __package__ is None or __package__ == "":
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from environment.taxiManager import TaxiManager
 
@@ -17,7 +17,7 @@ from environment.taxiManager import TaxiManager
 # ============================================================
 
 WIDTH = 15
-HEIGHT = 5
+HEIGHT = 15
 NUM_PASSENGERS = 2
 NUM_EPISODES = 50000
 MAX_STEPS_PER_EPISODE = 400

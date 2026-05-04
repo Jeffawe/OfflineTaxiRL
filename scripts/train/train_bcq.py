@@ -11,6 +11,7 @@ import numpy as np
 import torch
 from d3rlpy.algos import DiscreteBCQConfig
 from d3rlpy.dataset import MDPDataset
+from d3rlpy.preprocessing import StandardObservationScaler
 
 
 QUALITY_TO_TRANSITIONS_FILE = {
@@ -27,11 +28,15 @@ QUALITY_TO_MODEL_FILE = {
     "poor": Path("data/offline_rl_bcq_poor.d3"),
 }
 
-N_STEPS = 20_000
+N_STEPS = 40_000
 N_STEPS_PER_EPOCH = 1_000
-LEARNING_RATE = 1e-3
+# BCQ is more sensitive than CQL here because it also learns an action imitator.
+# d3rlpy's default is 6.25e-5; 1e-3 caused the imitator to fail on this dataset.
+LEARNING_RATE = 6.25e-5
 BATCH_SIZE = 64
 GAMMA = 0.99
+ACTION_FLEXIBILITY = 0.7
+BETA = 0.0
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,8 +51,14 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_dataset(path: Path) -> MDPDataset:
+    transitions = []
+
     with path.open("rb") as f:
-        transitions = pickle.load(f)
+        while True:
+            try:
+                transitions.extend(pickle.load(f))
+            except EOFError:
+                break
 
     observations = np.asarray([t["state"] for t in transitions], dtype=np.float32)
     actions = np.asarray([t["action"] for t in transitions], dtype=np.int64)
@@ -76,6 +87,9 @@ def main() -> None:
         batch_size=BATCH_SIZE,
         learning_rate=LEARNING_RATE,
         gamma=GAMMA,
+        observation_scaler=StandardObservationScaler(),
+        action_flexibility=ACTION_FLEXIBILITY,
+        beta=BETA,
     ).create(device=device)
 
     algo.fit(

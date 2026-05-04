@@ -51,6 +51,12 @@ Train behavior cloning:
 .venv/bin/python scripts/train/train_bc.py --quality poor
 ```
 
+Train the full BC epoch sweep (`40`, `60`, `100`) for one quality:
+
+```bash
+.venv/bin/python scripts/train/train_bc.py --quality expert --multiple
+```
+
 Train CQL:
 
 ```bash
@@ -77,12 +83,26 @@ data/offline_rl_cql_mixed.d3
 data/offline_rl_bcq_mixed.d3
 ```
 
+When BC is trained with `--multiple`, the checkpoints are saved with epoch suffixes:
+
+```text
+data/bc_model_expert_e40.pt
+data/bc_model_expert_e60.pt
+data/bc_model_expert_e100.pt
+```
+
 ### 3. Evaluate models
 
 Evaluate a behavior cloning model:
 
 ```bash
 .venv/bin/python scripts/evaluate_bc.py --quality mixed
+```
+
+Evaluate the full BC epoch sweep for one quality:
+
+```bash
+.venv/bin/python scripts/evaluate_bc.py --quality expert --multiple
 ```
 
 If `--quality` is omitted, the evaluator uses the first `data/bc_model_*.pt` model it can find.

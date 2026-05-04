@@ -5,6 +5,8 @@ if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import argparse
+import random
+import statistics
 import torch
 
 from environment.taxiManager import TaxiManager
@@ -19,14 +21,17 @@ QUALITY_TO_MODEL_FILE = {
     "poor": DATA_DIR / "bc_model_poor.pt",
 }
 LEGACY_MODEL_FILE = DATA_DIR / "bc_model.pt"
+BC_EPOCH_OPTIONS = [40, 60, 100]
 
 WIDTH = 15
 HEIGHT = 15
-NUM_EPISODES = 20
+NUM_EPISODES = 100
+EVAL_SEEDS = [0, 1, 2, 3, 4]
+MAX_STEPS = 400
 
 MOVE_PENALTY = -0.1
 INVALID_MOVE_PENALTY = -1.0
-PICKUP_BONUS = 0.0
+PICKUP_BONUS = 1.0
 
 ID_TO_ACTION = {
     0: (0, -1),   # up
@@ -43,6 +48,11 @@ def parse_args() -> argparse.Namespace:
         choices=sorted(QUALITY_TO_MODEL_FILE),
         default=None,
         help="Evaluate the BC model trained on this data quality. If omitted, use the first BC model found in data.",
+    )
+    parser.add_argument(
+        "--multiple",
+        action="store_true",
+        help="Evaluate all configured epoch-budget BC checkpoints for the selected quality.",
     )
     return parser.parse_args()
 
@@ -73,6 +83,29 @@ def resolve_model_file(quality: str | None) -> Path:
         )
 
     return model_file
+
+
+def model_file_for_epochs(base_model_file: Path, epochs: int) -> Path:
+    return base_model_file.with_name(f"{base_model_file.stem}_e{epochs}{base_model_file.suffix}")
+
+
+def resolve_model_files(quality: str | None, multiple: bool) -> list[Path]:
+    if not multiple:
+        return [resolve_model_file(quality)]
+
+    if quality is None:
+        raise ValueError("--multiple requires --quality so the evaluator knows which BC sweep to load.")
+
+    base_model_file = QUALITY_TO_MODEL_FILE[quality]
+    model_files = [model_file_for_epochs(base_model_file, epochs) for epochs in BC_EPOCH_OPTIONS]
+    missing_files = [str(path) for path in model_files if not path.exists()]
+
+    if missing_files:
+        raise FileNotFoundError(
+            "Missing BC epoch-sweep model files: " + ", ".join(missing_files)
+        )
+
+    return model_files
 
 
 def build_state(manager: TaxiManager) -> list[float]:
@@ -108,6 +141,17 @@ def load_model(model_file: Path, device: torch.device) -> BehaviorCloningModel:
     model.eval()
     return model
 
+
+def load_checkpoint(model_file: Path, device: torch.device) -> tuple[BehaviorCloningModel, dict]:
+    checkpoint = torch.load(model_file, map_location=device)
+    model = BehaviorCloningModel(
+        input_dim=checkpoint["input_dim"],
+        num_actions=checkpoint["num_actions"],
+    ).to(device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    model.eval()
+    return model, checkpoint
+
 def compute_reward(
     moved: bool,
     picked_up: bool,
@@ -132,7 +176,7 @@ def run_episode(model: BehaviorCloningModel, device: torch.device) -> dict[str, 
     manager.create_passengers()
 
     total_reward = 0.0
-    max_steps = 100
+    max_steps = MAX_STEPS
     step_count = 0
 
     invalid_moves = 0
@@ -195,41 +239,74 @@ def run_episode(model: BehaviorCloningModel, device: torch.device) -> dict[str, 
     }
 
 
+def evaluate_seed(
+    model: BehaviorCloningModel,
+    device: torch.device,
+    seed: int,
+) -> dict[str, float]:
+    random.seed(seed)
+    results = [run_episode(model, device) for _ in range(NUM_EPISODES)]
+
+    return compute_summary(results)
+
+
+def compute_summary(results: list[dict[str, float | int | bool]]) -> dict[str, float]:
+    num_episodes = len(results)
+
+    return {
+        "average_reward": sum(float(r["reward"]) for r in results) / num_episodes,
+        "success_rate": sum(1 for r in results if r["success"]) / num_episodes,
+        "average_episode_length": sum(float(r["episode_length"]) for r in results) / num_episodes,
+        "pickup_rate": sum(1 for r in results if r["picked_up_any"]) / num_episodes,
+        "dropoff_rate": sum(1 for r in results if r["dropped_off_any"]) / num_episodes,
+        "average_invalid_move_rate": sum(float(r["invalid_move_rate"]) for r in results) / num_episodes,
+        "average_pickups_per_episode": sum(float(r["pickup_count"]) for r in results) / num_episodes,
+        "average_dropoffs_per_episode": sum(float(r["dropoff_count"]) for r in results) / num_episodes,
+        "average_invalid_moves_per_episode": sum(float(r["invalid_moves"]) for r in results) / num_episodes,
+    }
+
+
+def format_values(
+    summaries: list[dict[str, float]],
+    metric: str,
+    percent: bool = False,
+) -> str:
+    values = [summary[metric] for summary in summaries]
+
+    if percent:
+        return ", ".join(f"{value:.2%}" for value in values)
+
+    return ", ".join(f"{value:.2f}" for value in values)
+
+
 def main() -> None:
     args = parse_args()
-    model_file = resolve_model_file(args.quality)
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = load_model(model_file, device)
+    model_files = resolve_model_files(args.quality, args.multiple)
 
-    num_episodes = NUM_EPISODES
-    results = []
+    for model_file in model_files:
+        model, checkpoint = load_checkpoint(model_file, device)
+        summaries = [evaluate_seed(model, device, seed) for seed in EVAL_SEEDS]
+        success_rates = [summary["success_rate"] for summary in summaries]
+        epochs = checkpoint.get("epochs")
 
-    for _ in range(num_episodes):
-        results.append(run_episode(model, device))
-
-    average_reward = sum(r["reward"] for r in results) / num_episodes
-    success_rate = sum(1 for r in results if r["success"]) / num_episodes
-    average_episode_length = sum(r["episode_length"] for r in results) / num_episodes
-    pickup_rate = sum(1 for r in results if r["picked_up_any"]) / num_episodes
-    dropoff_rate = sum(1 for r in results if r["dropped_off_any"]) / num_episodes
-    average_invalid_move_rate = sum(r["invalid_move_rate"] for r in results) / num_episodes
-
-    average_pickups_per_episode = sum(r["pickup_count"] for r in results) / num_episodes
-    average_dropoffs_per_episode = sum(r["dropoff_count"] for r in results) / num_episodes
-    average_invalid_moves_per_episode = sum(r["invalid_moves"] for r in results) / num_episodes
-
-    print(f"Model file: {model_file}")
-    print(f"Rollout evaluation over {num_episodes} episodes")
-    print(f"Average reward: {average_reward:.2f}")
-    print(f"Success rate: {success_rate:.2%}")
-    print(f"Average episode length: {average_episode_length:.2f}")
-    print(f"Pickup rate: {pickup_rate:.2%}")
-    print(f"Dropoff rate: {dropoff_rate:.2%}")
-    print(f"Average invalid move rate: {average_invalid_move_rate:.2%}")
-    print(f"Average pickups per episode: {average_pickups_per_episode:.2f}")
-    print(f"Average dropoffs per episode: {average_dropoffs_per_episode:.2f}")
-    print(f"Average invalid moves per episode: {average_invalid_moves_per_episode:.2f}")
+        print(f"Model file: {model_file}")
+        if epochs is not None:
+            print(f"Epoch budget: {epochs}")
+        print(f"Rollout evaluation over {NUM_EPISODES} episodes for each seed")
+        print(f"Seeds: {', '.join(str(seed) for seed in EVAL_SEEDS)}")
+        print(f"Average reward: {format_values(summaries, 'average_reward')}")
+        print(f"Success rate: {format_values(summaries, 'success_rate', percent=True)}")
+        print(f"Average episode length: {format_values(summaries, 'average_episode_length')}")
+        print(f"Pickup rate: {format_values(summaries, 'pickup_rate', percent=True)}")
+        print(f"Dropoff rate: {format_values(summaries, 'dropoff_rate', percent=True)}")
+        print(f"Average invalid move rate: {format_values(summaries, 'average_invalid_move_rate', percent=True)}")
+        print(f"Average pickups per episode: {format_values(summaries, 'average_pickups_per_episode')}")
+        print(f"Average dropoffs per episode: {format_values(summaries, 'average_dropoffs_per_episode')}")
+        print(f"Average invalid moves per episode: {format_values(summaries, 'average_invalid_moves_per_episode')}")
+        print(f"Mean success rate: {statistics.mean(success_rates):.2%}")
+        print(f"Success rate standard deviation: {statistics.stdev(success_rates):.2%}")
+        print()
 
 
 if __name__ == "__main__":

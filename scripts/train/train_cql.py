@@ -27,12 +27,11 @@ QUALITY_TO_MODEL_FILE = {
     "poor": Path("data/offline_rl_cql_poor.d3"),
 }
 
-N_STEPS = 20_000
+N_STEPS = 200_000
 N_STEPS_PER_EPOCH = 1_000
 LEARNING_RATE = 1e-3
 BATCH_SIZE = 64
 GAMMA = 0.99
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train a discrete CQL model.")
@@ -46,8 +45,14 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_dataset(path: Path) -> MDPDataset:
+    transitions = []
+
     with path.open("rb") as f:
-        transitions = pickle.load(f)
+        while True:
+            try:
+                transitions.extend(pickle.load(f))
+            except EOFError:
+                break
 
     observations = np.asarray([t["state"] for t in transitions], dtype=np.float32)
     actions = np.asarray([t["action"] for t in transitions], dtype=np.int64)
@@ -70,7 +75,14 @@ def main() -> None:
 
     print(f"Training CQL on quality='{args.quality}' using {transitions_file}")
     dataset = load_dataset(transitions_file)
-    device = "cuda:0" if torch.cuda.is_available() else False
+    if torch.cuda.is_available():
+        device = "cuda:0"
+    elif torch.backends.mps.is_available():
+        device = "mps:0"
+    else:
+        device = False
+
+    print(f"Using device: {device}")
 
     algo = DiscreteCQLConfig(
         batch_size=BATCH_SIZE,

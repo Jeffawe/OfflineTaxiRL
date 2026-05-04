@@ -5,6 +5,8 @@ if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import argparse
+import random
+import statistics
 import numpy as np
 import torch
 import d3rlpy
@@ -14,7 +16,8 @@ from environment.taxiManager import TaxiManager
 
 WIDTH = 15
 HEIGHT = 15
-NUM_EPISODES = 20
+NUM_EPISODES = 100
+EVAL_SEEDS = [0, 1, 2, 3, 4]
 NUM_PASSENGERS = 2
 MAX_STEPS = 400
 
@@ -229,6 +232,42 @@ def run_episode(algo) -> dict[str, float | int | bool]:
     }
 
 
+def evaluate_seed(algo, seed: int) -> dict[str, float]:
+    random.seed(seed)
+    results = [run_episode(algo) for _ in range(NUM_EPISODES)]
+
+    return compute_summary(results)
+
+
+def compute_summary(results: list[dict[str, float | int | bool]]) -> dict[str, float]:
+    num_episodes = len(results)
+
+    return {
+        "average_reward": sum(float(r["reward"]) for r in results) / num_episodes,
+        "success_rate": sum(1 for r in results if r["success"]) / num_episodes,
+        "average_episode_length": sum(float(r["episode_length"]) for r in results) / num_episodes,
+        "pickup_rate": sum(1 for r in results if r["picked_up_any"]) / num_episodes,
+        "dropoff_rate": sum(1 for r in results if r["dropped_off_any"]) / num_episodes,
+        "average_invalid_move_rate": sum(float(r["invalid_move_rate"]) for r in results) / num_episodes,
+        "average_pickups_per_episode": sum(float(r["pickup_count"]) for r in results) / num_episodes,
+        "average_dropoffs_per_episode": sum(float(r["dropoff_count"]) for r in results) / num_episodes,
+        "average_invalid_moves_per_episode": sum(float(r["invalid_moves"]) for r in results) / num_episodes,
+    }
+
+
+def format_values(
+    summaries: list[dict[str, float]],
+    metric: str,
+    percent: bool = False,
+) -> str:
+    values = [summary[metric] for summary in summaries]
+
+    if percent:
+        return ", ".join(f"{value:.2%}" for value in values)
+
+    return ", ".join(f"{value:.2f}" for value in values)
+
+
 def main() -> None:
     args = parse_args()
     algo_name, model_file = resolve_model_file(args.algorithm, args.quality)
@@ -236,31 +275,24 @@ def main() -> None:
     device = "cuda:0" if torch.cuda.is_available() else False
     algo = d3rlpy.load_learnable(str(model_file), device=device)
 
-    results = [run_episode(algo) for _ in range(NUM_EPISODES)]
-
-    average_reward = sum(r["reward"] for r in results) / NUM_EPISODES
-    success_rate = sum(1 for r in results if r["success"]) / NUM_EPISODES
-    average_episode_length = sum(r["episode_length"] for r in results) / NUM_EPISODES
-    pickup_rate = sum(1 for r in results if r["picked_up_any"]) / NUM_EPISODES
-    dropoff_rate = sum(1 for r in results if r["dropped_off_any"]) / NUM_EPISODES
-    average_invalid_move_rate = sum(r["invalid_move_rate"] for r in results) / NUM_EPISODES
-
-    average_pickups_per_episode = sum(r["pickup_count"] for r in results) / NUM_EPISODES
-    average_dropoffs_per_episode = sum(r["dropoff_count"] for r in results) / NUM_EPISODES
-    average_invalid_moves_per_episode = sum(r["invalid_moves"] for r in results) / NUM_EPISODES
+    summaries = [evaluate_seed(algo, seed) for seed in EVAL_SEEDS]
+    success_rates = [summary["success_rate"] for summary in summaries]
 
     print(f"Algorithm: {algo_name.upper()}")
     print(f"Model file: {model_file}")
-    print(f"Rollout evaluation over {NUM_EPISODES} episodes")
-    print(f"Average reward: {average_reward:.2f}")
-    print(f"Success rate: {success_rate:.2%}")
-    print(f"Average episode length: {average_episode_length:.2f}")
-    print(f"Pickup rate: {pickup_rate:.2%}")
-    print(f"Dropoff rate: {dropoff_rate:.2%}")
-    print(f"Average invalid move rate: {average_invalid_move_rate:.2%}")
-    print(f"Average pickups per episode: {average_pickups_per_episode:.2f}")
-    print(f"Average dropoffs per episode: {average_dropoffs_per_episode:.2f}")
-    print(f"Average invalid moves per episode: {average_invalid_moves_per_episode:.2f}")
+    print(f"Rollout evaluation over {NUM_EPISODES} episodes for each seed")
+    print(f"Seeds: {', '.join(str(seed) for seed in EVAL_SEEDS)}")
+    print(f"Average reward: {format_values(summaries, 'average_reward')}")
+    print(f"Success rate: {format_values(summaries, 'success_rate', percent=True)}")
+    print(f"Average episode length: {format_values(summaries, 'average_episode_length')}")
+    print(f"Pickup rate: {format_values(summaries, 'pickup_rate', percent=True)}")
+    print(f"Dropoff rate: {format_values(summaries, 'dropoff_rate', percent=True)}")
+    print(f"Average invalid move rate: {format_values(summaries, 'average_invalid_move_rate', percent=True)}")
+    print(f"Average pickups per episode: {format_values(summaries, 'average_pickups_per_episode')}")
+    print(f"Average dropoffs per episode: {format_values(summaries, 'average_dropoffs_per_episode')}")
+    print(f"Average invalid moves per episode: {format_values(summaries, 'average_invalid_moves_per_episode')}")
+    print(f"Mean success rate: {statistics.mean(success_rates):.2%}")
+    print(f"Success rate standard deviation: {statistics.stdev(success_rates):.2%}")
 
 
 if __name__ == "__main__":
