@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
 
-num_features = 128
+# This can either be 128 or 256
+num_features = 256
 
 class BehaviorCloningModel(nn.Module):
     def __init__(self, input_dim: int, num_actions: int = 4) -> None:
